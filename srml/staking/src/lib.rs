@@ -436,15 +436,6 @@ pub struct Exposure<AccountId, Balance: HasCompact> {
 	pub others: Vec<IndividualExposure<AccountId, Balance>>,
 }
 
-/// A slashing event occurred, slashing a validator for a given amount of balance.
-#[derive(PartialEq, Eq, PartialOrd, Ord, Clone, Encode, Decode, Default)]
-#[cfg_attr(feature = "std", derive(Debug))]
-pub struct SlashJournalEntry<AccountId, Balance: HasCompact> {
-	who: AccountId,
-	amount: Balance,
-	own_slash: Balance, // the amount of `who`'s own exposure that was slashed
-}
-
 pub type BalanceOf<T> =
 	<<T as Trait>::Currency as Currency<<T as system::Trait>::AccountId>>::Balance;
 type PositiveImbalanceOf<T> =
@@ -1158,10 +1149,6 @@ impl<T: Trait> Module<T> {
 		// Increment current era.
 		let current_era = CurrentEra::mutate(|s| { *s += 1; *s });
 
-		// prune journal for last era.
-		// TODO: prune journal for the era just exiting the bonding window.
-		// <EraSlashJournal<T>>::remove(current_era - 1);
-
 		CurrentEraStartSessionIndex::mutate(|v| {
 			*v = start_session_index;
 		});
@@ -1169,6 +1156,7 @@ impl<T: Trait> Module<T> {
 
 		if current_era > bonding_duration {
 			let first_kept = current_era - bonding_duration;
+
 			BondedEras::mutate(|bonded| {
 				bonded.push((current_era, start_session_index));
 
@@ -1177,7 +1165,10 @@ impl<T: Trait> Module<T> {
 					.take_while(|&&(era_idx, _)| era_idx < first_kept)
 					.count();
 
-				bonded.drain(..n_to_prune);
+				// kill slashing metadata.
+				for (pruned_era, _) in bonded.drain(..n_to_prune) {
+					slashing::clear_era_metadata(pruned_era);
+				}
 
 				if let Some(&(_, first_session)) = bonded.first() {
 					T::SessionInterface::prune_historical_up_to(first_session);
@@ -1330,7 +1321,7 @@ impl<T: Trait> Module<T> {
 		<Validators<T>>::remove(stash);
 		<Nominators<T>>::remove(stash);
 
-		// TODO: clear all slashing bookkeeping (slashing spans, etc).
+		slashing::clear_stash_metadata::<T>(stash);
 	}
 
 	/// Add reward points to validators using their stash account ID.
